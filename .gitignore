@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ROS 2 / colcon
+build/
+install/
+log/
+
+# IDEs
+.vscode/
+.idea/
+
+# Claude Code artifacts
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets / local config
+.env
+config.local.yaml
+
+# Logs / data
+*.log
+data/
+recordings/

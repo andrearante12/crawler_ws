@@ -1,0 +1,20 @@
+# Workstation-side bridge configuration. Ports must match pi/config.yaml.
+# Loaded via launch file; the /** wildcard applies to both nodes.
+
+/**:
+  ros__parameters:
+    pi_ip: 192.168.1.19           # TCP destination for movement commands
+    command_port: 5007            # TCP, Pi listens
+    camera_port: 5005             # UDP, workstation listens
+    ultrasonic_port: 5006         # UDP, workstation listens
+
+    robot_namespace: robot_0      # topics published as /<ns>/camera/image etc.
+    camera_frame_id: camera_link
+    ultrasonic_frame_id: ultrasonic_link
+
+    # sensor_msgs/Range geometry (HC-SR04 typicals).
+    ultrasonic_min_range_m: 0.02
+    ultrasonic_max_range_m: 4.0
+    ultrasonic_fov_rad: 0.26      # ~15 degrees
+
+    connect_timeout_s: 2.0        # TCP connect + send timeout in cmd_bridge_node

@@ -1,0 +1,13 @@
+# Pi-side runtime dependencies.
+#
+# NOT listed here (come from SunFounder's install or the Raspbian base
+# image — picked up by the venv via --system-site-packages):
+#   - picrawler, robot_hat  (SunFounder system install)
+#   - picamera2             (SunFounder system install)
+#   - Pillow (PIL)          (ships with Raspbian Bullseye as python3-pil)
+#   - numpy                 (transitive dep of picamera2)
+#
+# JPEG encoding is done via Pillow rather than opencv to avoid a multi-
+# minute opencv-python install on the Pi.
+
+PyYAML>=6.0

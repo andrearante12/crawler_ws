@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>crawler_bridge</name>
+  <version>0.1.0</version>
+  <description>UDP/TCP messaging bridge between the Pi-Crawler and ROS 2.</description>
+  <maintainer email="andrearante12@gmail.com">Andre Arante</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>python3-pil</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

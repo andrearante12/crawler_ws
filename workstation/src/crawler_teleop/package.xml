@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>crawler_teleop</name>
+  <version>0.1.0</version>
+  <description>Keyboard teleop for Pi-Crawler. Publishes JSON commands to the robot cmd topic.</description>
+  <maintainer email="andrearante12@gmail.com">Andre Arante</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

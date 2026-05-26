@@ -1,0 +1,15 @@
+# Pi-Crawler node configuration. Edit workstation_ip if the workstation
+# moves; the other defaults match docs/phase1_testing.md.
+
+workstation_ip: 192.168.1.187   # where to send camera + ultrasonic UDP
+camera_port: 5005               # UDP, workstation listens here
+ultrasonic_port: 5006           # UDP, workstation listens here
+command_port: 5007              # TCP, Pi listens here for movement commands
+
+camera_width: 640
+camera_height: 480
+jpeg_quality: 70                # keep <= 85 at 640x480 to stay under UDP MTU
+
+target_hz: 10.0                 # camera + ultrasonic rate
+default_speed: 80               # 0-100; SunFounder demos use 70-90 indoors
+command_timeout_s: 1.0          # heartbeat: sit if no command within this window

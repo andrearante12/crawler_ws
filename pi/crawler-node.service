@@ -1,0 +1,20 @@
+[Unit]
+Description=Pi-Crawler messaging node (Phase 1)
+Documentation=https://github.com/anthropics/claude-code (project-internal)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/crawler_ws/pi
+ExecStart=/home/pi/crawler_ws/.venv/bin/python3 /home/pi/crawler_ws/pi/crawler_node.py
+Restart=on-failure
+RestartSec=2
+
+# Logs land in journalctl: `journalctl -u crawler-node -f`
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
