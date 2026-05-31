@@ -39,6 +39,20 @@ def _open(bag: Path, storage_id: str) -> SequentialReader:
     return reader
 
 
+def _open_writer(
+    out: Path, fps: float, w: int, h: int
+) -> tuple[Optional[cv2.VideoWriter], str]:
+    # avc1 = H.264 in mp4: plays in browsers and every player. Fall back to
+    # mp4v (MPEG-4 Part 2) if this OpenCV build can't encode H.264 — note mp4v
+    # output will NOT play in a browser, only in a real media player.
+    for codec in ("avc1", "mp4v"):
+        writer = cv2.VideoWriter(str(out), cv2.VideoWriter_fourcc(*codec), fps, (w, h))
+        if writer.isOpened():
+            return writer, codec
+        writer.release()
+    return None, ""
+
+
 def render(
     bag: Path,
     topic: str,
@@ -71,6 +85,7 @@ def render(
     # Pass 2: decode + write streaming, so memory stays bounded for long bags.
     reader = _open(bag, storage_id)
     writer: Optional[cv2.VideoWriter] = None
+    codec = ""
     written = corrupt = 0
     w = h = 0
     while reader.has_next():
@@ -87,11 +102,9 @@ def render(
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         if writer is None:
             h, w = img.shape[:2]
-            writer = cv2.VideoWriter(
-                str(out), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
-            )
-            if not writer.isOpened():
-                print(f"error: could not open VideoWriter for {out}", file=sys.stderr)
+            writer, codec = _open_writer(out, fps, w, h)
+            if writer is None:
+                print(f"error: could not open a VideoWriter for {out}", file=sys.stderr)
                 return 1
         if img.shape[:2] != (h, w):  # guard against an odd-sized frame
             img = cv2.resize(img, (w, h))
@@ -101,10 +114,11 @@ def render(
     if writer is not None:
         writer.release()
 
+    note = "" if codec == "avc1" else "  (mp4v: use a media player, not a browser)"
     print(f"wrote {out}")
     print(
         f"  frames={written}  corrupt={corrupt}  {w}x{h}  {fps} fps  "
-        f"~{written / fps:.1f}s"
+        f"~{written / fps:.1f}s  codec={codec}{note}"
     )
     return 0
 
