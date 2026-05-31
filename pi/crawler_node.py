@@ -1,9 +1,16 @@
-"""Pi-side node for the Pi-Crawler VLM-search project (Phase 1).
+"""Pi-side node for the Pi-Crawler VLM-search project.
 
 Streams camera frames (UDP) and ultrasonic readings (UDP) to the
 workstation, accepts movement commands (TCP, newline-delimited JSON),
-and runs a safety loop that sits the robot if no command arrives within
-``command_timeout_s``.
+and runs two safety mechanisms:
+
+  * **Command timeout** (Phase 1): the worker sits the robot if no command
+    arrives within ``command_timeout_s``.
+  * **Reactive stop** (Phase 2): a dedicated safety thread polls the
+    HC-SR04 at ``safety_hz`` and blocks ``forward`` intents while distance
+    falls below ``ultrasonic_stop_cm`` (with hysteresis up to
+    ``ultrasonic_resume_cm``). Backward and turns remain available as
+    recovery actions.
 
 No VLM, no perception, no autonomy here — pure messaging + safety.
 """
@@ -59,6 +66,9 @@ class Config:
     target_hz: float
     default_speed: int
     command_timeout_s: float
+    safety_hz: float
+    ultrasonic_stop_cm: float
+    ultrasonic_resume_cm: float
 
 
 def load_config(path: Path) -> Config:
@@ -86,6 +96,31 @@ class CommandState:
     def snapshot(self) -> tuple[str, int, float]:
         with self._lock:
             return self._intent, self._speed, self._last_cmd_ts
+
+
+class SafetyState:
+    """Thread-safe holder for the latest safety-relevant readings.
+
+    Populated by the safety thread (sole owner of the HC-SR04). Consumed
+    by the worker (to gate forward motion) and the telemetry thread
+    (to forward the latest distance over UDP).
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._distance_cm: float = -1.0  # last raw reading; <0 = sensor error
+        self._forward_blocked: bool = False
+        self._last_update_ts: float = 0.0  # monotonic
+
+    def update(self, distance_cm: float, forward_blocked: bool) -> None:
+        with self._lock:
+            self._distance_cm = distance_cm
+            self._forward_blocked = forward_blocked
+            self._last_update_ts = time.monotonic()
+
+    def snapshot(self) -> tuple[float, bool, float]:
+        with self._lock:
+            return self._distance_cm, self._forward_blocked, self._last_update_ts
 
 
 def _now_ms() -> int:
@@ -159,12 +194,19 @@ def run_camera(cfg: Config, stop_event: threading.Event) -> None:
         LOG.info("Camera thread exited")
 
 
-def run_ultrasonic(cfg: Config, stop_event: threading.Event) -> None:
+def run_ultrasonic(
+    cfg: Config, safety: SafetyState, stop_event: threading.Event,
+) -> None:
+    """Forwards the safety thread's cached ultrasonic reading over UDP.
+
+    Does NOT touch GPIO — the safety thread is the sole reader of the
+    HC-SR04, and this thread just reformats the cached value at
+    ``target_hz``. Wire format is unchanged from Phase 1.
+    """
     LOG.info(
-        "Ultrasonic: D2/D3 -> %s:%d @ %.1fHz",
+        "Ultrasonic telemetry -> %s:%d @ %.1fHz",
         cfg.workstation_ip, cfg.ultrasonic_port, cfg.target_hz,
     )
-    sonar = Ultrasonic(Pin("D2"), Pin("D3"))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     dst = (cfg.workstation_ip, cfg.ultrasonic_port)
     period = 1.0 / cfg.target_hz
@@ -173,11 +215,7 @@ def run_ultrasonic(cfg: Config, stop_event: threading.Event) -> None:
 
     try:
         while not stop_event.is_set():
-            try:
-                distance_cm = float(sonar.read())
-            except Exception as e:
-                LOG.warning("Ultrasonic read failed: %s", e)
-                distance_cm = -1.0
+            distance_cm, _blocked, _ts = safety.snapshot()
             try:
                 sock.sendto(
                     ULTRASONIC_PACKET.pack(seq, _now_ms(), distance_cm), dst,
@@ -189,6 +227,70 @@ def run_ultrasonic(cfg: Config, stop_event: threading.Event) -> None:
     finally:
         sock.close()
         LOG.info("Ultrasonic thread exited")
+
+
+# Treat the ultrasonic reading as stale (and fail-safe to "blocked") if no
+# good read has arrived in this many seconds. One second is comfortably
+# longer than the safety period; long enough to ride out a single bad ping.
+SAFETY_STALE_AFTER_S = 1.0
+
+
+def run_safety(
+    cfg: Config,
+    sonar: Ultrasonic,
+    safety: SafetyState,
+    stop_event: threading.Event,
+) -> None:
+    """Polls the HC-SR04 at ``safety_hz`` and maintains ``SafetyState``.
+
+    Hysteresis: forward is blocked once distance < ``ultrasonic_stop_cm``
+    and remains blocked until distance > ``ultrasonic_resume_cm``. On
+    sustained sensor failure (> ``SAFETY_STALE_AFTER_S``), forward is
+    forced blocked so a dead sensor can't be mistaken for clear space.
+    """
+    LOG.info(
+        "Safety loop: %.1fHz, stop<%.1fcm, resume>%.1fcm",
+        cfg.safety_hz, cfg.ultrasonic_stop_cm, cfg.ultrasonic_resume_cm,
+    )
+    period = 1.0 / cfg.safety_hz
+    next_t = time.monotonic() + period
+    blocked = False
+    last_good_read_ts = time.monotonic()
+
+    try:
+        while not stop_event.is_set():
+            try:
+                distance_cm = float(sonar.read())
+            except Exception as e:
+                LOG.warning("Safety ultrasonic read failed: %s", e)
+                distance_cm = -1.0
+
+            now = time.monotonic()
+            if distance_cm > 0:
+                last_good_read_ts = now
+                if not blocked and distance_cm < cfg.ultrasonic_stop_cm:
+                    blocked = True
+                    LOG.info(
+                        "Forward blocked: %.1f cm < %.1f cm",
+                        distance_cm, cfg.ultrasonic_stop_cm,
+                    )
+                elif blocked and distance_cm > cfg.ultrasonic_resume_cm:
+                    blocked = False
+                    LOG.info(
+                        "Forward re-enabled: %.1f cm > %.1f cm",
+                        distance_cm, cfg.ultrasonic_resume_cm,
+                    )
+            elif not blocked and now - last_good_read_ts > SAFETY_STALE_AFTER_S:
+                blocked = True
+                LOG.warning(
+                    "Forward blocked: ultrasonic stale (%.1fs since last good read)",
+                    now - last_good_read_ts,
+                )
+
+            safety.update(distance_cm, blocked)
+            next_t = _rate_sleep(next_t, period)
+    finally:
+        LOG.info("Safety thread exited")
 
 
 def _handle_client(
@@ -259,6 +361,7 @@ def run_command_server(
 
 def run_worker(
     state: CommandState,
+    safety: SafetyState,
     cfg: Config,
     stop_event: threading.Event,
     crawler: Picrawler,
@@ -270,6 +373,7 @@ def run_worker(
     except Exception as e:
         LOG.error("startup sit failed: %s", e)
     last_executed = "stop"
+    last_block_log_ts = 0.0  # rate-limit "forward blocked" log spam
     try:
         while not stop_event.is_set():
             intent, speed, last_cmd_ts = state.snapshot()
@@ -289,6 +393,17 @@ def run_worker(
                         LOG.error("do_step('sit') failed: %s", e)
                     last_executed = "stop"
                 # Idle briefly; check stop_event responsively.
+                stop_event.wait(0.1)
+                continue
+
+            # Safety gate: drop forward intents while ultrasonic blocks.
+            # Backward / turns / stop fall through as recovery actions.
+            _, forward_blocked, _ = safety.snapshot()
+            if intent == "forward" and forward_blocked:
+                now = time.monotonic()
+                if now - last_block_log_ts > 1.0:
+                    LOG.info("Dropping forward intent (ultrasonic blocked)")
+                    last_block_log_ts = now
                 stop_event.wait(0.1)
                 continue
 
@@ -326,8 +441,11 @@ def main() -> int:
     LOG.info("Loaded config from %s", cfg_path)
 
     state = CommandState(default_speed=cfg.default_speed)
+    safety = SafetyState()
     stop_event = threading.Event()
     crawler = Picrawler()
+    # Construct the HC-SR04 once; the safety thread is its sole owner.
+    sonar = Ultrasonic(Pin("D2"), Pin("D3"))
 
     threads = [
         threading.Thread(
@@ -335,7 +453,11 @@ def main() -> int:
             name="camera", daemon=True,
         ),
         threading.Thread(
-            target=run_ultrasonic, args=(cfg, stop_event),
+            target=run_safety, args=(cfg, sonar, safety, stop_event),
+            name="safety", daemon=True,
+        ),
+        threading.Thread(
+            target=run_ultrasonic, args=(cfg, safety, stop_event),
             name="ultrasonic", daemon=True,
         ),
         threading.Thread(
@@ -343,7 +465,7 @@ def main() -> int:
             name="cmd-server", daemon=True,
         ),
         threading.Thread(
-            target=run_worker, args=(state, cfg, stop_event, crawler),
+            target=run_worker, args=(state, safety, cfg, stop_event, crawler),
             name="worker", daemon=False,
         ),
     ]

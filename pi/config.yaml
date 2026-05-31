@@ -10,6 +10,13 @@ camera_width: 640
 camera_height: 480
 jpeg_quality: 70                # keep <= 85 at 640x480 to stay under UDP MTU
 
-target_hz: 10.0                 # camera + ultrasonic rate
+target_hz: 10.0                 # camera + ultrasonic telemetry rate
 default_speed: 80               # 0-100; SunFounder demos use 70-90 indoors
 command_timeout_s: 1.0          # heartbeat: sit if no command within this window
+
+# Safety loop (Phase 2). Sole reader of the HC-SR04; telemetry consumes
+# the cached value. Forward is blocked while distance < stop threshold,
+# re-enabled once distance > resume threshold (hysteresis avoids chatter).
+safety_hz: 20.0
+ultrasonic_stop_cm: 25.0        # block forward below this
+ultrasonic_resume_cm: 30.0      # re-enable forward above this
