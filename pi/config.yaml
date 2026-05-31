@@ -18,5 +18,5 @@ command_timeout_s: 1.0          # heartbeat: sit if no command within this windo
 # the cached value. Forward is blocked while distance < stop threshold,
 # re-enabled once distance > resume threshold (hysteresis avoids chatter).
 safety_hz: 20.0
-ultrasonic_stop_cm: 25.0        # block forward below this
-ultrasonic_resume_cm: 30.0      # re-enable forward above this
+ultrasonic_stop_cm: 15.0        # block forward below this
+ultrasonic_resume_cm: 20.0      # re-enable forward above this

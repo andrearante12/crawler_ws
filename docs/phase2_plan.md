@@ -67,8 +67,8 @@ Phase 2 builds on top of them:
      deliverable.
    - `run_worker` consults `SafetyState` before each `do_action`: drops
      `forward` while blocked; everything else passes.
-   - New config keys: `safety_hz: 20.0`, `ultrasonic_stop_cm: 25.0`,
-     `ultrasonic_resume_cm: 30.0`.
+   - New config keys: `safety_hz: 20.0`, `ultrasonic_stop_cm: 15.0`,
+     `ultrasonic_resume_cm: 20.0`.
 
 2. **Bridge CompressedImage publisher**
    (`workstation/src/crawler_bridge/crawler_bridge/udp_telemetry_node.py`):
@@ -114,9 +114,14 @@ Phase 2 builds on top of them:
   not expose a cancel hook. The safety thread detects obstacles fast
   but the worker can only act on that information *before* starting the
   next step. At `default_speed: 80` (~10–15 cm/s) the worst-case
-  overshoot is ~15 cm — `ultrasonic_stop_cm: 25.0` absorbs it.
+  overshoot is ~one full step (~10–15 cm). The hardware test passed at a
+  25 cm stop, but the operator tightened it to `ultrasonic_stop_cm: 15.0`
+  for closer approaches. That leaves little-to-no clearance against a
+  single in-flight step at speed 80 — if contact is observed, drop
+  `default_speed` (shorter steps = less overshoot) rather than widening
+  the threshold back out.
 - **Hysteresis.** HC-SR04 jitter on hard floors is typically a few cm.
-  A 5 cm gap between stop (25 cm) and resume (30 cm) thresholds should
+  A 5 cm gap between stop (15 cm) and resume (20 cm) thresholds should
   prevent forward-stop chatter. Tune empirically.
 - **Sensor-stale fail-safe.** If the ultrasonic returns failure (-1/-2)
   for longer than 1 s, the safety thread forces `forward_blocked` to
@@ -146,7 +151,7 @@ Pause for hardware handoff after each Pi-touching deliverable:
 (See `docs/phase2_testing.md` once written.) Key checks:
 
 - **Obstacle test (new):** drive forward at a wall slowly, verify the
-  robot stops accepting `forward` at ~25 cm and resumes at ~30 cm.
+  robot stops accepting `forward` at ~15 cm and resumes at ~20 cm.
   Backward/turns continue to work.
 - **Connection-loss test:** same as Phase 1 tests 5b/5c — must still
   pass after the safety thread refactor.
