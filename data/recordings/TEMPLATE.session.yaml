@@ -1,0 +1,10 @@
+# Copy this to <bag-dir-name>.session.yaml and fill it in after capturing.
+# Tracked in git; the bag directory it describes is not.
+session: "YYYYMMDD_HHMMSS"     # must match the bag directory name
+date: "YYYY-MM-DD"
+room: ""                        # e.g. "living room", "hallway + kitchen"
+lighting: ""                    # bright | dim | natural | mixed
+objects: []                     # e.g. ["blue backpack", "red chair", "cardboard box"]
+duration_s: 0                   # from `ros2 bag info`
+robot_namespace: "robot_0"
+notes: ""                       # clutter, motion, edge cases, anything notable
