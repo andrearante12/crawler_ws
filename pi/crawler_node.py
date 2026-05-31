@@ -69,6 +69,7 @@ class Config:
     safety_hz: float
     ultrasonic_stop_cm: float
     ultrasonic_resume_cm: float
+    ultrasonic_resume_reads: int = 5
 
 
 def load_config(path: Path) -> Config:
@@ -243,18 +244,24 @@ def run_safety(
 ) -> None:
     """Polls the HC-SR04 at ``safety_hz`` and maintains ``SafetyState``.
 
-    Hysteresis: forward is blocked once distance < ``ultrasonic_stop_cm``
-    and remains blocked until distance > ``ultrasonic_resume_cm``. On
+    Asymmetric debounce, biased toward stopped: forward is blocked the
+    instant a single read falls below ``ultrasonic_stop_cm``, but only
+    re-enabled after ``ultrasonic_resume_reads`` *consecutive* reads above
+    ``ultrasonic_resume_cm``. The HC-SR04 is prone to bimodal near/far
+    noise; trusting the close read and requiring sustained clear reads to
+    recover means a spurious far spike can't un-stop the robot. On
     sustained sensor failure (> ``SAFETY_STALE_AFTER_S``), forward is
     forced blocked so a dead sensor can't be mistaken for clear space.
     """
     LOG.info(
-        "Safety loop: %.1fHz, stop<%.1fcm, resume>%.1fcm",
+        "Safety loop: %.1fHz, stop<%.1fcm, resume>%.1fcm x%d reads",
         cfg.safety_hz, cfg.ultrasonic_stop_cm, cfg.ultrasonic_resume_cm,
+        cfg.ultrasonic_resume_reads,
     )
     period = 1.0 / cfg.safety_hz
     next_t = time.monotonic() + period
     blocked = False
+    clear_streak = 0  # consecutive reads above resume; gates re-enable
     last_good_read_ts = time.monotonic()
 
     try:
@@ -268,24 +275,36 @@ def run_safety(
             now = time.monotonic()
             if distance_cm > 0:
                 last_good_read_ts = now
-                if not blocked and distance_cm < cfg.ultrasonic_stop_cm:
+                if distance_cm < cfg.ultrasonic_stop_cm:
+                    # Close read: block now, cancel any accumulated clear credit.
+                    clear_streak = 0
+                    if not blocked:
+                        blocked = True
+                        LOG.info(
+                            "Forward blocked: %.1f cm < %.1f cm",
+                            distance_cm, cfg.ultrasonic_stop_cm,
+                        )
+                elif distance_cm > cfg.ultrasonic_resume_cm:
+                    # Clear read: re-enable only after enough in a row.
+                    clear_streak += 1
+                    if blocked and clear_streak >= cfg.ultrasonic_resume_reads:
+                        blocked = False
+                        LOG.info(
+                            "Forward re-enabled: %.1f cm > %.1f cm for %d reads",
+                            distance_cm, cfg.ultrasonic_resume_cm,
+                            cfg.ultrasonic_resume_reads,
+                        )
+                else:
+                    # Between stop and resume: ambiguous, drop clear credit.
+                    clear_streak = 0
+            elif now - last_good_read_ts > SAFETY_STALE_AFTER_S:
+                clear_streak = 0
+                if not blocked:
                     blocked = True
-                    LOG.info(
-                        "Forward blocked: %.1f cm < %.1f cm",
-                        distance_cm, cfg.ultrasonic_stop_cm,
+                    LOG.warning(
+                        "Forward blocked: ultrasonic stale (%.1fs since last good read)",
+                        now - last_good_read_ts,
                     )
-                elif blocked and distance_cm > cfg.ultrasonic_resume_cm:
-                    blocked = False
-                    LOG.info(
-                        "Forward re-enabled: %.1f cm > %.1f cm",
-                        distance_cm, cfg.ultrasonic_resume_cm,
-                    )
-            elif not blocked and now - last_good_read_ts > SAFETY_STALE_AFTER_S:
-                blocked = True
-                LOG.warning(
-                    "Forward blocked: ultrasonic stale (%.1fs since last good read)",
-                    now - last_good_read_ts,
-                )
 
             safety.update(distance_cm, blocked)
             next_t = _rate_sleep(next_t, period)

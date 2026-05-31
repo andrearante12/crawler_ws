@@ -15,8 +15,13 @@ default_speed: 80               # 0-100; SunFounder demos use 70-90 indoors
 command_timeout_s: 1.0          # heartbeat: sit if no command within this window
 
 # Safety loop (Phase 2). Sole reader of the HC-SR04; telemetry consumes
-# the cached value. Forward is blocked while distance < stop threshold,
-# re-enabled once distance > resume threshold (hysteresis avoids chatter).
-safety_hz: 20.0
-ultrasonic_stop_cm: 15.0        # block forward below this
-ultrasonic_resume_cm: 20.0      # re-enable forward above this
+# the cached value. Forward blocks immediately on a close read and only
+# re-enables after several consecutive clear reads, so spurious far
+# spikes from a noisy sensor can't un-stop the robot.
+safety_hz: 15.0                 # HC-SR04 needs >=60ms between pings to avoid
+                                # echo interference; 20Hz (50ms) produced
+                                # bimodal near/far noise. 15Hz = 66ms.
+ultrasonic_stop_cm: 15.0        # block forward below this (acts on one read)
+ultrasonic_resume_cm: 20.0      # re-enable forward above this...
+ultrasonic_resume_reads: 5      # ...but only after this many consecutive clear
+                                # reads (~0.33s @ 15Hz) — debounces sensor noise

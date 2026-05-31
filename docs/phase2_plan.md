@@ -67,8 +67,8 @@ Phase 2 builds on top of them:
      deliverable.
    - `run_worker` consults `SafetyState` before each `do_action`: drops
      `forward` while blocked; everything else passes.
-   - New config keys: `safety_hz: 20.0`, `ultrasonic_stop_cm: 15.0`,
-     `ultrasonic_resume_cm: 20.0`.
+   - New config keys: `safety_hz: 15.0`, `ultrasonic_stop_cm: 15.0`,
+     `ultrasonic_resume_cm: 20.0`, `ultrasonic_resume_reads: 5`.
 
 2. **Bridge CompressedImage publisher**
    (`workstation/src/crawler_bridge/crawler_bridge/udp_telemetry_node.py`):
@@ -120,9 +120,20 @@ Phase 2 builds on top of them:
   single in-flight step at speed 80 — if contact is observed, drop
   `default_speed` (shorter steps = less overshoot) rather than widening
   the threshold back out.
-- **Hysteresis.** HC-SR04 jitter on hard floors is typically a few cm.
-  A 5 cm gap between stop (15 cm) and resume (20 cm) thresholds should
-  prevent forward-stop chatter. Tune empirically.
+- **Noise rejection (debounce).** First hardware runs showed the HC-SR04
+  returning bimodal garbage — alternating a ~4 cm near value with a far
+  value (25–297 cm) on nearly every read, even while sitting. A plain
+  stop/resume hysteresis can't help: each reading jumps clear past both
+  thresholds, so the state flapped and forward leaked through during the
+  "far" reads. Fix is an asymmetric debounce biased toward stopped: block
+  on a single close read, but re-enable only after `ultrasonic_resume_reads`
+  (default 5) *consecutive* clear reads. Replaying the logged noise through
+  it yields one block and no spurious resumes.
+- **Sensor poll rate.** The HC-SR04 needs ≥60 ms between pings or the next
+  trigger can catch the previous echo's ringing as a phantom near-return —
+  the likely source of the bimodal noise above. `safety_hz` dropped from
+  20 Hz (50 ms) to 15 Hz (66 ms) to respect this. If noise persists, the
+  sensor mounting/wiring itself needs a look.
 - **Sensor-stale fail-safe.** If the ultrasonic returns failure (-1/-2)
   for longer than 1 s, the safety thread forces `forward_blocked` to
   True. Transient single-read failures don't lock the robot up.
