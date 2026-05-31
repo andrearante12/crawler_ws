@@ -27,8 +27,9 @@ config.local.yaml
 
 # Logs / data
 *.log
-# rosbag2 data — never commit, wherever it lands
+# rosbag2 data + rendered video — never commit, wherever it lands
 *.mcap
+*.mp4
 
 # Recorded bags are large/binary — ignore everything under data/, but keep
 # the session-library index (README) and the per-session metadata sidecars
