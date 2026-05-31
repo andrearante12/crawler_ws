@@ -27,6 +27,8 @@ config.local.yaml
 
 # Logs / data
 *.log
+# rosbag2 data — never commit, wherever it lands
+*.mcap
 
 # Recorded bags are large/binary — ignore everything under data/, but keep
 # the session-library index (README) and the per-session metadata sidecars
