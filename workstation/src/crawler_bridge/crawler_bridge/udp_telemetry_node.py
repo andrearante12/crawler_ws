@@ -1,6 +1,11 @@
 """Receives camera + ultrasonic UDP streams from the Pi and republishes
 them on ROS 2 topics under /<robot_namespace>/.
 
+Camera frames are published twice: as a raw sensor_msgs/Image (decoded,
+for rqt_image_view and existing consumers) and as a sensor_msgs/
+CompressedImage wrapping the JPEG bytes verbatim (for low-overhead bag
+recording).
+
 Two background threads (one per UDP socket) decode incoming datagrams
 and publish directly. rclpy publishers are thread-safe, so no queue +
 timer indirection is needed at Phase-1 rates (~10 Hz).
@@ -18,7 +23,7 @@ import rclpy
 from PIL import Image as PILImage
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Image, Range
+from sensor_msgs.msg import CompressedImage, Image, Range
 
 # Wire formats — must match pi/crawler_node.py exactly.
 CAMERA_HEADER = struct.Struct("!IQI")        # seq, ts_ms, jpeg_len
@@ -50,6 +55,13 @@ class UdpTelemetryNode(Node):
         # Sensor-data QoS (BEST_EFFORT) matches typical camera/range publishers.
         self.image_pub = self.create_publisher(
             Image, f"/{ns}/camera/image", qos_profile_sensor_data,
+        )
+        # Compressed JPEG passthrough — wraps the incoming bytes with no
+        # decode/encode round-trip. This is the topic bags record (raw Image
+        # would be ~30x larger). Topic name follows the image_transport
+        # convention so rqt_image_view picks it up automatically.
+        self.compressed_pub = self.create_publisher(
+            CompressedImage, f"/{ns}/camera/image/compressed", qos_profile_sensor_data,
         )
         self.range_pub = self.create_publisher(
             Range, f"/{ns}/ultrasonic/range", qos_profile_sensor_data,
@@ -99,6 +111,20 @@ class UdpTelemetryNode(Node):
                     f"truncated frame seq={seq}: {len(jpeg)}/{jpeg_len}B"
                 )
                 continue
+
+            # Shared stamp so the compressed and raw Image for one frame
+            # correlate cleanly in a bag.
+            stamp = self.get_clock().now().to_msg()
+
+            # Publish the JPEG verbatim first — no decode, so this topic
+            # survives even if the raw-Image decode below fails.
+            comp = CompressedImage()
+            comp.header.stamp = stamp
+            comp.header.frame_id = self.camera_frame_id
+            comp.format = "jpeg"
+            comp.data = jpeg
+            self.compressed_pub.publish(comp)
+
             try:
                 pil = PILImage.open(io.BytesIO(jpeg))
                 pil.load()
@@ -120,7 +146,7 @@ class UdpTelemetryNode(Node):
             last_seq = seq
 
             msg = Image()
-            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.stamp = stamp
             msg.header.frame_id = self.camera_frame_id
             msg.height = int(arr.shape[0])
             msg.width = int(arr.shape[1])
