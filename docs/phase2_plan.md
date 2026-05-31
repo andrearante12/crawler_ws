@@ -1,8 +1,6 @@
 # Phase 2: Safety hardening + bag recording
 
-> **Status**: STUB. Expand when Phase 1 is done. Below is the rough shape;
-> details (and probably the deliverables list itself) will change based on
-> what we learned in Phase 1.
+> **Status**: active.
 
 ## Goal
 
@@ -10,85 +8,164 @@ Make the system safe and observable enough to confidently develop against
 without the Pi present. Two threads:
 
 1. **Safety**: a fast Pi-side loop independent of the workstation that
-   handles ultrasonic emergency stop, command-timeout fallback, and
-   connection-loss behavior. The robot must fail safe.
-2. **Recording**: a bag-recording workflow so we can capture real Pi
-   sessions and replay them on the workstation later. This is the bridge
-   to Pi-less development for Phases 3+.
+   adds ultrasonic-driven reactive stop on top of the existing command-
+   timeout fallback. The robot must fail safe.
+2. **Recording**: a bag record + replay workflow so we can capture real
+   Pi sessions and replay them on the workstation later. This is the
+   bridge to Pi-less development for Phases 3+.
 
 ## Non-goals
 
 - No VLM yet.
 - No simulation environment (Gazebo etc.) — that's a different project.
-- No fancy safety beyond reactive stop. No predictive collision avoidance,
-  no learned safety policies.
+- No fancy safety beyond reactive stop. No predictive collision
+  avoidance, no learned safety policies.
+- **No `do_step`-based gait rewrite.** The current `do_action(name, 1,
+  speed)` worker is ~1 s blocking per call and is not interruptible
+  mid-step. Preemption of an in-flight step is out of scope. Safety
+  acts before each new step instead (see "Design notes").
 
-## Deliverables (rough)
+## Carry-over from Phase 1
 
-1. Safety refactor on `pi/crawler_node.py`:
-   - Fast loop at ≥20 Hz reading ultrasonic and watchdogging command
-     timestamps.
-   - Reactive stop if ultrasonic < threshold (configurable, ~15-20 cm).
-   - Command-timeout stop (already in Phase 1 — verify it actually works
-     under WiFi drop).
-   - Clean shutdown on SIGTERM.
-2. Bag recording launch file:
-   - Records `/robot_0/camera/image`, `/robot_0/ultrasonic/range`, and
-     `/robot_0/cmd` (so we can replay both inputs and intended outputs).
-3. Bag replay launch file:
-   - Plays a bag file with adjustable speed.
-   - Swaps in for the bridge node so downstream code sees identical
-     topics.
-4. A small library of recorded sessions (gitignored, but documented in
-   `data/recordings/README.md`):
-   - Empty room.
-   - Room with a few objects.
-   - Hallway / multi-room.
-   - At least one "edge case" session (low light, cluttered, etc.).
-5. Phase 2 testing doc.
+The following already work from Phase 1 and are NOT re-deliverables —
+Phase 2 builds on top of them:
 
-## Design notes (to be expanded)
+- Command-timeout sit (1 s) at `pi/crawler_node.py:run_worker`.
+- Clean SIGTERM/SIGINT shutdown that sits the robot in `finally`.
+- WiFi-drop, bridge-crash, teleop-quit, and process-death all already
+  trigger the sit-on-timeout path (Phase 1 testing, tests 5a–5d).
 
-- Safety loop should run as a separate thread/process from the telemetry
-  loop. Telemetry can lag without safety lagging.
-- Bag size matters — at 10 Hz, JPEG frames, a 30-min session is order of
-  ~500 MB. Plan disk usage.
-- Consider whether to record the raw UDP stream (smaller, replayable
-  bit-exact) or the post-bridge ROS topics (larger, more useful for
-  downstream development). Probably the latter.
+## Decisions (locked in)
+
+- **Image transport**: bridge publishes BOTH raw `Image` (for
+  `rqt_image_view` and existing consumers) AND a new `CompressedImage`
+  (JPEG passthrough — zero decode/encode round-trip). Bags record only
+  the compressed topic. *This touches the messaging layer; flagged per
+  CLAUDE.md.*
+- **Reactive stop semantics**: while ultrasonic distance < threshold,
+  the worker silently drops `forward` intents. `backward`, `turn_left`,
+  `turn_right`, `stop` all pass through as recovery actions. No
+  "sit and refuse all input" mode.
+- **Safety isolation**: dedicated thread in `crawler_node.py`, not a
+  separate process. The safety thread becomes the *sole* ultrasonic
+  reader and exposes a cached value + obstacle flag to the telemetry
+  thread and the worker via a shared `SafetyState`.
+- **Replay launch**: `ros2 bag play` only. Does NOT start
+  `udp_telemetry_node` or `cmd_bridge_node` — commands in a bag are
+  historical, not stimulus.
+
+## Deliverables
+
+1. **Pi-side safety hardening** (`pi/crawler_node.py`):
+   - New `SafetyState` (analog to `CommandState`): `latest_distance_cm`,
+     `forward_blocked`, with stop/resume hysteresis.
+   - New `run_safety` thread @ `safety_hz` (default 20 Hz): reads
+     ultrasonic, updates state. Sole reader of the HC-SR04.
+   - `run_ultrasonic` (UDP telemetry) becomes a consumer of
+     `SafetyState` and no longer touches GPIO directly. Wire format
+     unchanged — the workstation bridge needs zero changes for this
+     deliverable.
+   - `run_worker` consults `SafetyState` before each `do_action`: drops
+     `forward` while blocked; everything else passes.
+   - New config keys: `safety_hz: 20.0`, `ultrasonic_stop_cm: 25.0`,
+     `ultrasonic_resume_cm: 30.0`.
+
+2. **Bridge CompressedImage publisher**
+   (`workstation/src/crawler_bridge/crawler_bridge/udp_telemetry_node.py`):
+   - Publish `/<ns>/camera/image/compressed` as
+     `sensor_msgs/CompressedImage`, wrapping the incoming JPEG bytes
+     directly (no decode).
+   - Keep the existing raw `Image` publisher.
+
+3. **Bag-recording launch**
+   (`workstation/src/crawler_bridge/launch/record.launch.py`):
+   - Composes `bringup.launch.py` + a `ros2 bag record` process.
+   - Records `/<ns>/camera/image/compressed`,
+     `/<ns>/ultrasonic/range`, `/<ns>/cmd`. Output under
+     `data/recordings/<timestamp>/`.
+   - Reserve `/<ns>/odom` as a future topic name (don't subscribe yet).
+
+4. **Bag-replay launch**
+   (`workstation/src/crawler_bridge/launch/replay.launch.py`):
+   - Runs `ros2 bag play` with `rate` and `bag_path` args.
+   - Does NOT start `udp_telemetry_node` or `cmd_bridge_node`.
+
+5. **Session library** (`data/recordings/`):
+   - `.gitignore` ignores bag files; tracks README + per-session
+     metadata sidecars.
+   - `README.md` documenting the sidecar schema (room, lighting,
+     objects, length, notes).
+   - 4 captured sessions: empty room, room with objects, hallway /
+     multi-room, edge case (low light or cluttered). Cap each at
+     ~5 min until we know what consumes them.
+
+6. **Phase 2 testing doc** (`docs/phase2_testing.md`):
+   - Obstacle test: drive at a wall, forward refused, backward/turns OK.
+   - Recording roundtrip: record 5 min, replay, compare msg counts +
+     rates.
+   - Pi-off replay: shut Pi down, run replay launch, verify
+     `rqt_image_view` shows the feed from the bag.
+   - Re-run Phase 1 tests 5a-5d against the new code.
+
+## Design notes
+
+- **Ultrasonic preemption isn't possible mid-step.** `do_action(name, 1,
+  speed)` is one ~1 s blocking gait cycle; the SunFounder library does
+  not expose a cancel hook. The safety thread detects obstacles fast
+  but the worker can only act on that information *before* starting the
+  next step. At `default_speed: 80` (~10–15 cm/s) the worst-case
+  overshoot is ~15 cm — `ultrasonic_stop_cm: 25.0` absorbs it.
+- **Hysteresis.** HC-SR04 jitter on hard floors is typically a few cm.
+  A 5 cm gap between stop (25 cm) and resume (30 cm) thresholds should
+  prevent forward-stop chatter. Tune empirically.
+- **Sensor-stale fail-safe.** If the ultrasonic returns failure (-1/-2)
+  for longer than 1 s, the safety thread forces `forward_blocked` to
+  True. Transient single-read failures don't lock the robot up.
+- **Bag size.** At 640×480 JPEG q=70 / 10 Hz, a 30-min session lands
+  around 500 MB. (Recording raw `Image` would be ~16 GB / 30 min, which
+  is why we record the compressed topic only.)
 
 ## Open questions
 
-- Should the safety loop be a separate Python process, or a thread in
-  the main script? Thread is simpler; process is more robust to bugs.
-- Ultrasonic stop threshold: too tight = annoying false stops on uneven
-  floors; too loose = doesn't actually save anything. Tune empirically.
-- Do we want pose recording? No native pose source yet, but might add
-  visual odometry later. Leave a placeholder topic.
+- Do we eventually want pose recording? Not now — no native pose source.
+  We reserve `/<ns>/odom` as a topic name so a future visual-odometry
+  node can slot in without retooling the bag pipeline.
 
 ## Working style
 
-TBD when starting this phase.
+Pause for hardware handoff after each Pi-touching deliverable:
+
+1. Deliver #1 (safety). **Stop**, sync + hardware-test.
+2. Deliver #2-4 (bridge + launch files). Workable on the workstation
+   alone with the synthetic-Pi loopback from Phase 1.
+3. **Stop**, sync to Pi, capture #5 (session library) on hardware.
+4. Write #6 (testing doc) from the actual results.
 
 ## Testing plan
 
-- Connection-loss test: yank WiFi mid-drive, robot stops within
-  configured timeout. Verify multiple times.
-- Obstacle test: drive at a wall slowly, verify ultrasonic stop triggers
-  reliably.
-- Recording test: record a 10-minute session, replay it, verify topics
-  arrive identically.
-- Replay-without-Pi test: shut off the Pi, run a bag, verify the rest of
-  the pipeline (bridge + any consumers) works against playback.
+(See `docs/phase2_testing.md` once written.) Key checks:
+
+- **Obstacle test (new):** drive forward at a wall slowly, verify the
+  robot stops accepting `forward` at ~25 cm and resumes at ~30 cm.
+  Backward/turns continue to work.
+- **Connection-loss test:** same as Phase 1 tests 5b/5c — must still
+  pass after the safety thread refactor.
+- **Recording roundtrip:** record 5 min, replay at 1× and 2×, verify
+  topic rates and msg counts match.
+- **Pi-off replay:** shut the Pi off, run replay launch, verify
+  `rqt_image_view` against the compressed topic shows the recorded
+  feed.
 
 ## Scope
 
-Smaller than Phase 1, probably a few sessions. Most of the work is
-operational/testing, not new code.
+Smaller than Phase 1. Pi-side change is a focused refactor; launch
+files are mechanical; the session-capture step is operational.
 
 ## Definition of done
 
-- Robot fails safe under WiFi drop, GPIO error, or ultrasonic obstacle.
-- I have a couple of recorded sessions across multiple rooms.
+- Robot fails safe under WiFi drop, GPIO error, *and* ultrasonic
+  obstacle.
+- 4 recorded sessions live under `data/recordings/` with metadata
+  sidecars.
 - I can develop downstream code (Phase 3+) with the Pi powered off,
-  using bag playback.
+  using `replay.launch.py` against any of the captured sessions.
