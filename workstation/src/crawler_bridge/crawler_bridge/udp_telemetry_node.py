@@ -79,12 +79,12 @@ class UdpTelemetryNode(Node):
         self._range_sock.bind(("0.0.0.0", ultrasonic_port))
         self._range_sock.settimeout(1.0)
 
-        threading.Thread(
-            target=self._camera_loop, name="camera-rx", daemon=True,
-        ).start()
-        threading.Thread(
-            target=self._range_loop, name="range-rx", daemon=True,
-        ).start()
+        self._threads = [
+            threading.Thread(target=self._camera_loop, name="camera-rx", daemon=True),
+            threading.Thread(target=self._range_loop, name="range-rx", daemon=True),
+        ]
+        for t in self._threads:
+            t.start()
 
         self.get_logger().info(
             f"Listening UDP camera={camera_port} ultrasonic={ultrasonic_port}; "
@@ -100,6 +100,8 @@ class UdpTelemetryNode(Node):
             except socket.timeout:
                 continue
             except OSError as e:
+                if self._stop.is_set():
+                    break  # socket closed during shutdown — expected, exit quietly
                 self.get_logger().warning(f"camera recv error: {e}")
                 continue
             if len(data) < CAMERA_HEADER.size:
@@ -163,6 +165,8 @@ class UdpTelemetryNode(Node):
             except socket.timeout:
                 continue
             except OSError as e:
+                if self._stop.is_set():
+                    break  # socket closed during shutdown — expected, exit quietly
                 self.get_logger().warning(f"range recv error: {e}")
                 continue
             if len(data) != ULTRASONIC_PACKET.size:
@@ -190,6 +194,12 @@ class UdpTelemetryNode(Node):
             self._range_sock.close()
         except Exception:
             pass
+        # Join the rx threads before invalidating the node. Otherwise a thread
+        # mid-iteration can call publish() on an already-destroyed node and die
+        # with an uncaught InvalidHandle. recvfrom has a 1 s timeout, so this
+        # returns promptly; the bound caps a wedged socket.
+        for t in getattr(self, "_threads", []):
+            t.join(timeout=2.0)
         return super().destroy_node()
 
 
